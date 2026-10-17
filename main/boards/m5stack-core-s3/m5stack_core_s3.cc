@@ -2298,6 +2298,10 @@ private:
         // 待定单击超过双击窗口 → 执行单击（ToggleChat）
         if (pending_single_release && (now - pending_single_release_time) > DOUBLE_CLICK_MS) {
             pending_single_release = false;
+            // 律动中单击不唤醒对话：避免手一碰就把律动退出，只认双击。
+            if (rhythm_active_) {
+                return;
+            }
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting) {
                 EnterWifiConfigMode();
@@ -2355,6 +2359,10 @@ private:
 
             // 滑动手势：短促 + 位移够大
             if (touch_duration < SHORT_TOUCH_MS && (abs_dx >= SWIPE_THRESHOLD_PX || abs_dy >= SWIPE_THRESHOLD_PX)) {
+                // 律动中不响应滑动，避免误触发互动/对话把律动带停。
+                if (rhythm_active_) {
+                    return;
+                }
                 const std::vector<const char*>* pool = nullptr;
                 if (abs_dx > abs_dy) {
                     pool = (dx_total < 0) ? &LeftSwipePool() : &RightSwipePool();
@@ -2371,6 +2379,12 @@ private:
                 if (pending_single_release && (now - pending_single_release_time) <= DOUBLE_CLICK_MS) {
                     // 第二次短按落在窗口内 → 双击
                     pending_single_release = false;
+                    // 律动中：双击屏幕 = 退出律动。
+                    if (rhythm_active_) {
+                        ESP_LOGI(TAG, "rhythm exit by double tap");
+                        StopMusicRhythm();
+                        return;
+                    }
                     SendUserMessage(PickRandom(DoubleClickPool()));
                 } else {
                     // 候选单击，等下一帧或下次按下判定
