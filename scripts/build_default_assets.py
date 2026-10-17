@@ -598,7 +598,8 @@ def read_custom_wake_word_from_sdkconfig(sdkconfig_path):
             elif 'CONFIG_WAKE_WORD_SENSITIVITY_LOW=y' in line:
                 config_values['threshold'] = 50  # 50/100 = 0.50
             elif 'CONFIG_WAKE_WORD_SENSITIVITY_MEDIUM=y' in line:
-                config_values['threshold'] = 35  # 35/100 = 0.35
+                # 本仓库自定义：中档定为 0.30（官方默认 0.35），降低误触发
+                config_values['threshold'] = 30  # 30/100 = 0.30
             elif 'CONFIG_WAKE_WORD_SENSITIVITY_HIGH=y' in line:
                 config_values['threshold'] = 20  # 20/100 = 0.20
     
