@@ -1557,7 +1557,11 @@ private:
         if (len + 1 > sizeof(buf)) return false;
         buf[0] = reg;
         memcpy(buf + 1, data, len);
-        return i2c_master_transmit(py32_dev_, buf, len + 1, 200) == ESP_OK;
+        esp_err_t werr = i2c_master_transmit(py32_dev_, buf, len + 1, 200);
+        if (werr != ESP_OK) {
+            ESP_LOGW(TAG, "PY32 write reg 0x%02X (len=%u) FAILED: %s", reg, (unsigned)len, esp_err_to_name(werr));
+        }
+        return werr == ESP_OK;
     }
 
     bool Py32SetLedFrame(const uint16_t* rgb565_colors, size_t count) {
@@ -1571,6 +1575,7 @@ private:
         bool ok1 = Py32WriteRegBlock(0x30, data, count * 2);
         uint8_t refresh = (uint8_t)(count | 0x40);
         bool ok2 = Py32WriteRegBlock(0x24, &refresh, 1);
+        ESP_LOGI(TAG, "Py32SetLedFrame: ok_data=%d ok_refresh=%d first=0x%04X", (int)ok1, (int)ok2, (unsigned)rgb565_colors[0]);
         return ok1 && ok2;
     }
 
@@ -1732,10 +1737,10 @@ private:
                 uint16_t color = Rgb888To565(r, g, b);
                 uint16_t colors[12];
                 for (int i = 0; i < 12; i++) colors[i] = color;
-                Py32SetLedFrame(colors, 12);
+                bool led_ok = Py32SetLedFrame(colors, 12);
                 led_manual_ = true;
-                ESP_LOGI(TAG, "MCP set LED color: r=%d g=%d b=%d", r, g, b);
-                return true;
+                ESP_LOGI(TAG, "MCP set LED color: r=%d g=%d b=%d -> %s", r, g, b, led_ok ? "OK" : "FAILED");
+                return led_ok;
             });
         mcp.AddTool("self.led.turn_off",
             "Turn off the LED ring light.",
