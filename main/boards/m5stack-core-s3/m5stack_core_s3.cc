@@ -1543,12 +1543,30 @@ private:
             py32_dev_ = nullptr;
             return;
         }
+        // ⭐ 引脚 13 = LED 电源/使能脚。照 M5Stack 官方固件 hal_io_expander.cpp：
+        //    setDirection(13, true) + setPullMode(13, true) + setDriveMode(13, false)
+        //    引脚 13 属于高字节寄存器，位号 = 13 - 8 = 5
+        {
+            const uint8_t bit = 5;
+            uint8_t v;
+            if (Py32ReadReg(0x04, &v)) { v |= (1 << bit);  Py32WriteRegBlock(0x04, &v, 1); }   // GPIO_M_H   输出
+            if (Py32ReadReg(0x0A, &v)) { v |= (1 << bit);  Py32WriteRegBlock(0x0A, &v, 1); }   // GPIO_PU_H  上拉
+            if (Py32ReadReg(0x0C, &v)) { v &= ~(1 << bit); Py32WriteRegBlock(0x0C, &v, 1); }   // GPIO_PD_H  不拉低
+            if (Py32ReadReg(0x14, &v)) { v &= ~(1 << bit); Py32WriteRegBlock(0x14, &v, 1); }   // GPIO_DRV_H 推挽
+            ESP_LOGI(TAG, "PY32 pin13 (LED power) enabled");
+        }
+
         // 设 LED 数量 = 12
         uint8_t cmd[2] = {0x24, 12};
         i2c_master_transmit(py32_dev_, cmd, 2, 200);
         uint16_t off[12] = {};
         Py32SetLedFrame(off, 12);
         ESP_LOGI(TAG, "PY32 LED ready (12 LEDs, off)");
+    }
+
+    bool Py32ReadReg(uint8_t reg, uint8_t* out) {
+        if (!py32_dev_) return false;
+        return i2c_master_transmit_receive(py32_dev_, &reg, 1, out, 1, 200) == ESP_OK;
     }
 
     bool Py32WriteRegBlock(uint8_t reg, const uint8_t* data, size_t len) {
