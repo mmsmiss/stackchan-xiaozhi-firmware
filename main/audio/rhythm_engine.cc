@@ -28,7 +28,6 @@ constexpr float kFluxMin = 0.08f;
 constexpr float kBeatMinLevel = 0.06f;
 constexpr float kBeatMinLow = 0.24f;
 constexpr uint32_t kBeatMinGapMs = 240;
-constexpr uint32_t kBeatProbeIntervalMs = 5000;
 constexpr float kTempoBandLow = 0.75f;
 constexpr float kTempoBandHigh = 1.33f;
 constexpr uint8_t kTempoResyncCount = 3;
@@ -106,7 +105,6 @@ void RhythmEngine::Start() {
 
     const uint32_t now = NowMs();
     last_signal_ms_ = now;
-    last_probe_ms_ = now;
     last_loud_ms_.store(now, std::memory_order_relaxed);
     loud_since_ms_.store(0, std::memory_order_relaxed);
     loud_.store(false, std::memory_order_relaxed);
@@ -120,6 +118,9 @@ void RhythmEngine::Start() {
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
         memset(shared_bars_, 0, sizeof(shared_bars_));
         shared_avg_level_ = 0.0f;
+        shared_flux_ = 0.0f;
+        shared_threshold_ = 0.0f;
+        shared_low_ = 0.0f;
     }
 
     running_.store(true, std::memory_order_release);
@@ -138,6 +139,9 @@ void RhythmEngine::Stop() {
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
         memset(shared_bars_, 0, sizeof(shared_bars_));
         shared_avg_level_ = 0.0f;
+        shared_flux_ = 0.0f;
+        shared_threshold_ = 0.0f;
+        shared_low_ = 0.0f;
     }
 
     ESP_LOGI(TAG, "stopped (beats=%u)", BeatCount());
@@ -150,12 +154,8 @@ void RhythmEngine::Feed(const int16_t* data, size_t samples, int channels) {
 
     const size_t frames = samples / static_cast<size_t>(channels);
     for (size_t index = 0; index < frames; ++index) {
-        const int16_t* frame = data + index * static_cast<size_t>(channels);
-        int32_t sum = 0;
-        for (int channel = 0; channel < channels; ++channel) {
-            sum += frame[channel];
-        }
-        block_[block_fill_++] = static_cast<int16_t>(sum / channels);
+        // 用第一个声道：和唤醒词保持一致，也避免左右麦克风相位相消。
+        block_[block_fill_++] = data[index * static_cast<size_t>(channels)];
         if (block_fill_ >= kFftSize) {
             block_fill_ = 0;
             ProcessBlock(NowMs());
@@ -341,17 +341,15 @@ void RhythmEngine::ComputeSpectrum(uint32_t now_ms) {
         // 逐拍日志放 DEBUG：串口打印会占用音频输入任务的时间，默认不刷屏。
         ESP_LOGD(TAG, "#%u x%.1f bpm=%u", count, strength,
                  beat_period_ms_ ? (unsigned)(60000UL / beat_period_ms_) : 0U);
-    } else if ((now_ms - last_probe_ms_) >= kBeatProbeIntervalMs) {
-        last_probe_ms_ = now_ms;
-        ESP_LOGI(TAG, "probe flux=%.2f thr=%.2f low=%.2f level=%.2f bpm=%u beats=%u",
-                 flux, threshold, low_max, avg_level_,
-                 beat_period_ms_ ? (unsigned)(60000UL / beat_period_ms_) : 0U, BeatCount());
     }
 
     {
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
         memcpy(shared_bars_, bars_, sizeof(shared_bars_));
         shared_avg_level_ = avg_level_;
+        shared_flux_ = flux;
+        shared_threshold_ = threshold;
+        shared_low_ = low_max;
     }
 
     const bool loud_now = avg_level_ > kLoudLevel || (now_ms - last_signal_ms_) <= kSilenceHoldMs;
@@ -400,4 +398,15 @@ uint32_t RhythmEngine::SilenceMs(uint32_t now_ms) const {
 
 bool RhythmEngine::ConsumeBeat() {
     return beat_pending_.exchange(false, std::memory_order_acq_rel);
+}
+
+void RhythmEngine::GetDiagnostics(Diagnostics& out) const {
+    std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    out.flux = shared_flux_;
+    out.threshold = shared_threshold_;
+    out.low = shared_low_;
+    out.level = shared_avg_level_;
+    const uint32_t period = beat_period_ms_atomic_.load(std::memory_order_relaxed);
+    out.bpm = period ? static_cast<uint32_t>(60000UL / period) : 0U;
+    out.beats = beat_count_.load(std::memory_order_relaxed);
 }

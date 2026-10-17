@@ -111,6 +111,9 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     commands_.push_back({"dou dou yin yue lv dong", "豆豆音乐律动", "wake"});
     commands_.push_back({"yin yue lv dong", "音乐律动", "wake"});
     commands_.push_back({"ting zhi yin yue lv dong", "停止音乐律动", "wake"});
+    // 不带"音乐律动"的短说法，避免停止的话被较短的"音乐律动"命令抢走。
+    commands_.push_back({"ting zhi lv dong", "停止律动", "wake"});
+    commands_.push_back({"guan bi lv dong", "关闭律动", "wake"});
 
     if (models_ == nullptr || models_->num == -1) {
         ESP_LOGE(TAG, "Failed to initialize wakenet model");

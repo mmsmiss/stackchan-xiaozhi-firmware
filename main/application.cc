@@ -823,7 +823,9 @@ void Application::HandleWakeWordDetectedEvent() {
     const bool rhythm_start = (wake_word == "开始音乐律动") ||
                               (wake_word == "豆豆音乐律动") ||
                               (wake_word == "音乐律动");
-    const bool rhythm_stop = (wake_word == "停止音乐律动");
+    const bool rhythm_stop = (wake_word == "停止音乐律动") ||
+                             (wake_word == "停止律动") ||
+                             (wake_word == "关闭律动");
     if (rhythm_start || rhythm_stop) {
         auto& board = Board::GetInstance();
         if (rhythm_stop) {

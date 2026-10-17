@@ -98,20 +98,7 @@ public:
     }
 
     void MoveTo(int yaw_deg, int pitch_deg, int time_ms) {
-        if (yaw_deg < -45) yaw_deg = -45;
-        if (yaw_deg > 45) yaw_deg = 45;
-        if (pitch_deg < 5) pitch_deg = 5;
-        if (pitch_deg > 60) pitch_deg = 60;
-        int yaw_pos = 460 + yaw_deg * 16 / 5;
-        int pitch_pos = 620 + pitch_deg * 16 / 5;
-        ESP_LOGI("Servo", "MoveTo yaw=%d pitch=%d t=%d (caller=%p)",
-                 yaw_deg, pitch_deg, time_ms, __builtin_return_address(0));
-        bus_.WritePos(1, yaw_pos, time_ms, 0);
-        bus_.WritePos(2, pitch_pos, time_ms, 0);
-        // 记当前命令位置——Nod/Shake 动画用这个作 base，而不是 tracker_->GetYaw()
-        // 后者只反映人脸追踪目标，不反映 MCP head.move 设的硬位置。
-        last_yaw_deg_ = yaw_deg;
-        last_pitch_deg_ = pitch_deg;
+        MoveToInternal(yaw_deg, pitch_deg, time_ms, true);
     }
 
     void PauseScan() {
@@ -151,6 +138,26 @@ private:
         int yaw = (rand() % 51) - 25;
         int pitch = 25 + (rand() % 11);
         self->MoveTo(yaw, pitch, 1500);
+    }
+
+    // 跟拍点头每拍要发两次位置；串口日志关掉，避免刷屏和拖慢节拍。
+    void MoveToInternal(int yaw_deg, int pitch_deg, int time_ms, bool log) {
+        if (yaw_deg < -45) yaw_deg = -45;
+        if (yaw_deg > 45) yaw_deg = 45;
+        if (pitch_deg < 5) pitch_deg = 5;
+        if (pitch_deg > 60) pitch_deg = 60;
+        int yaw_pos = 460 + yaw_deg * 16 / 5;
+        int pitch_pos = 620 + pitch_deg * 16 / 5;
+        if (log) {
+            ESP_LOGI("Servo", "MoveTo yaw=%d pitch=%d t=%d (caller=%p)",
+                     yaw_deg, pitch_deg, time_ms, __builtin_return_address(0));
+        }
+        bus_.WritePos(1, yaw_pos, time_ms, 0);
+        bus_.WritePos(2, pitch_pos, time_ms, 0);
+        // 记当前命令位置——Nod/Shake 动画用这个作 base，而不是 tracker_->GetYaw()
+        // 后者只反映人脸追踪目标，不反映 MCP head.move 设的硬位置。
+        last_yaw_deg_ = yaw_deg;
+        last_pitch_deg_ = pitch_deg;
     }
 
     struct BeatNodState {
@@ -413,7 +420,7 @@ void StackChanServo::BeatNod(int amplitude_deg, int step_ms) {
 
     int down = last_pitch_deg_ - amplitude_deg;
     if (down < 5) down = 5;
-    MoveTo(last_yaw_deg_, down, step_ms);
+    MoveToInternal(last_yaw_deg_, down, step_ms, false);
 
     esp_timer_stop(beat_timer_);
     esp_timer_start_once(beat_timer_, static_cast<uint64_t>(step_ms) * 1000ULL);
@@ -421,8 +428,8 @@ void StackChanServo::BeatNod(int amplitude_deg, int step_ms) {
 
 void StackChanServo::BeatNodCb(void* arg) {
     auto* self = static_cast<StackChanServo*>(arg);
-    self->MoveTo(self->beat_nod_state_.yaw, self->beat_nod_state_.base_pitch,
-                 self->beat_nod_state_.step_ms);
+    self->MoveToInternal(self->beat_nod_state_.yaw, self->beat_nod_state_.base_pitch,
+                         self->beat_nod_state_.step_ms, false);
     self->anim_running_ = false;
 }
 
@@ -1461,6 +1468,7 @@ private:
     esp_timer_handle_t rhythm_timer_ = nullptr;
     bool rhythm_active_ = false;
     bool rhythm_happy_ = false;
+    uint32_t rhythm_last_probe_ms_ = 0;
     StackChanServo servo_;
     FaceTracker face_tracker_;
     esp_timer_handle_t touchpad_timer_;
@@ -2593,6 +2601,7 @@ public:
         RhythmEngine::GetInstance().Start();
         rhythm_active_ = true;
         rhythm_happy_ = false;
+        rhythm_last_probe_ms_ = 0;
         servo_.PauseScan();
         face_tracker_.Pause(false);
         if (display_ != nullptr) {
@@ -2627,8 +2636,8 @@ public:
         RhythmEngine::GetInstance().Stop();
         if (display_ != nullptr) {
             auto* disp = static_cast<M5StackAvatarDisplay*>(display_);
+            // 只恢复表情，不调用 SetEmotion：避免把用户手动设置的灯光颜色覆盖成中性色。
             disp->SetRhythmMode(false);
-            display_->SetEmotion("neutral");
         }
         rhythm_happy_ = false;
         ESP_LOGI(TAG, "music rhythm OFF");
@@ -2688,6 +2697,15 @@ public:
                 disp->SetRhythmFace(false);
                 rhythm_happy_ = false;
             }
+        }
+
+        // 调参日志放在控制定时器里，不占用音频输入任务。
+        if ((now - rhythm_last_probe_ms_) >= 10000) {
+            rhythm_last_probe_ms_ = now;
+            RhythmEngine::Diagnostics diag;
+            engine.GetDiagnostics(diag);
+            ESP_LOGI(TAG, "rhythm probe flux=%.2f thr=%.2f low=%.2f level=%.2f bpm=%u beats=%u",
+                     diag.flux, diag.threshold, diag.low, diag.level, diag.bpm, diag.beats);
         }
 
         if (engine.SilenceMs(now) > 60000) {

@@ -42,6 +42,17 @@ public:
     uint32_t BeatPeriodMs() const { return beat_period_ms_atomic_.load(std::memory_order_relaxed); }
     uint32_t BeatCount() const { return beat_count_.load(std::memory_order_relaxed); }
 
+    /** 调参用的诊断快照；由控制定时器打印，避免在音频任务里打串口。 */
+    struct Diagnostics {
+        float flux = 0.0f;
+        float threshold = 0.0f;
+        float low = 0.0f;
+        float level = 0.0f;
+        uint32_t bpm = 0;
+        uint32_t beats = 0;
+    };
+    void GetDiagnostics(Diagnostics& out) const;
+
 private:
     RhythmEngine() = default;
 
@@ -78,13 +89,15 @@ private:
     uint8_t interval_cursor_ = 0;
     uint32_t beat_period_ms_ = 0;
     uint8_t out_of_band_count_ = 0;
-    uint32_t last_probe_ms_ = 0;
     bool tables_ready_ = false;
 
-    // 给界面读的快照（音频任务写、界面读，锁只保护这 32 个浮点）
+    // 给界面/诊断读的快照（音频任务写、其他任务读）
     mutable std::mutex snapshot_mutex_;
     float shared_bars_[kBarCount] = {};
     float shared_avg_level_ = 0.0f;
+    float shared_flux_ = 0.0f;
+    float shared_threshold_ = 0.0f;
+    float shared_low_ = 0.0f;
 
     // 跨任务状态
     std::atomic<bool> beat_pending_{false};
