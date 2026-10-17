@@ -60,6 +60,10 @@ class FaceTracker;
 
 class StackChanServo {
 public:
+    // 空闲扫视总开关：false = 空闲时舵机完全不动（避免滋滋机械噪音）。
+    // 对话中的人脸追踪不受影响。想恢复把她改成 true 即可。
+    static constexpr bool kIdleScanEnabled = false;
+
     bool Begin() {
         if (!bus_.begin(UART_NUM_1, 1000000, 6, 7)) {
             ESP_LOGE("Servo", "SCS bus begin failed");
@@ -75,8 +79,10 @@ public:
         args.name = "servo_idle";
         args.skip_unhandled_events = true;
         esp_timer_create(&args, &idle_timer_);
-        esp_timer_start_periodic(idle_timer_, 4000000);
-        scan_running_ = true;
+        if (kIdleScanEnabled) {
+            esp_timer_start_periodic(idle_timer_, 4000000);
+            scan_running_ = true;
+        }
         return true;
     }
 
@@ -105,6 +111,7 @@ public:
     }
 
     void ResumeScan() {
+        if (!kIdleScanEnabled) return;   // 空闲扫视已关闭
         if (!scan_running_ && idle_timer_) {
             esp_timer_start_periodic(idle_timer_, 4000000);
             scan_running_ = true;
