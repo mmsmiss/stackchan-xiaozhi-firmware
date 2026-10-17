@@ -1,0 +1,66 @@
+name: Build Waveshare AMOLED 2.16 (Xian Trip Planner)
+
+on:
+  push:
+    branches: [waveshare-amoled-2.16]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.5.2
+    steps:
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "*"
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Stash customized HTML + clean managed_components
+        shell: bash
+        run: |
+          mkdir -p /tmp/stash-wifi-html
+          if [ -d managed_components/78__esp-wifi-connect/assets ]; then
+            cp -r managed_components/78__esp-wifi-connect/assets/* /tmp/stash-wifi-html/ 2>/dev/null || true
+          fi
+          rm -rf managed_components
+
+      - name: Build Waveshare ESP32-S3 Touch AMOLED 2.16
+        shell: bash
+        run: |
+          . $IDF_PATH/export.sh
+          idf.py set-target esp32s3
+          idf.py reconfigure || true
+          if [ -d managed_components/78__esp-wifi-connect/assets ] && [ -d /tmp/stash-wifi-html ]; then
+            cp -r /tmp/stash-wifi-html/* managed_components/78__esp-wifi-connect/assets/ || true
+          fi
+          idf.py build
+
+      - name: Pack flash artifacts
+        shell: bash
+        run: |
+          . $IDF_PATH/export.sh
+          mkdir -p out
+          cp build/bootloader/bootloader.bin out/
+          cp build/partition_table/partition-table.bin out/
+          cp build/ota_data_initial.bin out/ || true
+          cp build/StackChan-XiaoZhi.bin out/xiaozhi.bin
+          cp build/srmodels/srmodels.bin out/ 2>/dev/null || true
+          cp build/generated_assets.bin out/ 2>/dev/null || true
+          if [ -f build/flash_args ]; then
+            idf.py merge-bin -o out/merged-binary.bin || true
+          fi
+          ls -la out/
+          echo "--- flash_args ---"
+          cat build/flash_args || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: waveshare-amoled-2.16-${{ github.sha }}
+          path: out/
+          retention-days: 90

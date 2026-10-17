@@ -151,6 +151,7 @@ private:
     CustomBacklight* backlight_;
     esp_io_expander_handle_t io_expander = NULL;
     PowerSaveTimer* power_save_timer_;
+    bool trip_mode_ = false;
 
     void InitializePowerSaveTimer() {
         power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
@@ -212,6 +213,24 @@ private:
                 return;
             }
             app.ToggleChatState();
+        });
+
+        // 长按 BOOT 键 2 秒：开启/关闭出行规划模式
+        boot_button_.OnLongPress([this]() {
+            auto& app = Application::GetInstance();
+            trip_mode_ = !trip_mode_;
+            if (trip_mode_) {
+                GetDisplay()->ShowNotification("出行规划模式已开启");
+                if (app.GetDeviceState() == kDeviceStateIdle) {
+                    app.StartListening();
+                }
+            } else {
+                GetDisplay()->ShowNotification("出行规划模式已关闭");
+                auto state = app.GetDeviceState();
+                if (state == kDeviceStateListening || state == kDeviceStateSpeaking) {
+                    app.StopListening();
+                }
+            }
         });
 
 #if CONFIG_USE_DEVICE_AEC
