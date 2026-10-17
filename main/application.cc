@@ -817,12 +817,34 @@ void Application::HandleStopListeningEvent() {
 }
 
 void Application::HandleWakeWordDetectedEvent() {
+    auto wake_word = audio_service_.GetLastWakeWord();
+
+    // 音乐律动命令：设备本地处理，不连服务器，也不走大模型。
+    const bool rhythm_start = (wake_word == "开始音乐律动") ||
+                              (wake_word == "豆豆音乐律动") ||
+                              (wake_word == "音乐律动");
+    const bool rhythm_stop = (wake_word == "停止音乐律动");
+    if (rhythm_start || rhythm_stop) {
+        auto& board = Board::GetInstance();
+        if (rhythm_stop) {
+            board.StopMusicRhythm();
+        } else if (GetDeviceState() == kDeviceStateIdle) {
+            board.StartMusicRhythm();
+        } else {
+            // 正在对话时不启动，避免和语音交互抢舵机。
+            ESP_LOGI(TAG, "Rhythm start ignored (state=%d)", (int)GetDeviceState());
+        }
+        // 自定义唤醒词检测一次后会停；这里马上恢复，继续听下一句。
+        audio_service_.EnableWakeWordDetection(true);
+        ESP_LOGI(TAG, "Local rhythm command: %s (state: %d)", wake_word.c_str(), (int)GetDeviceState());
+        return;
+    }
+
     if (!protocol_) {
         return;
     }
 
     auto state = GetDeviceState();
-    auto wake_word = audio_service_.GetLastWakeWord();
     ESP_LOGI(TAG, "Wake word detected: %s (state: %d)", wake_word.c_str(), (int)state);
 
     if (state == kDeviceStateIdle) {

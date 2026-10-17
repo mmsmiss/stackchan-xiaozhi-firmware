@@ -7,6 +7,7 @@
 #include "i2c_device.h"
 #include "axp2101.h"
 #include "mcp_server.h"
+#include "rhythm_engine.h"
 
 #include <esp_log.h>
 #include <esp_heap_caps.h>
@@ -79,6 +80,16 @@ public:
         args.name = "servo_idle";
         args.skip_unhandled_events = true;
         esp_timer_create(&args, &idle_timer_);
+
+        // 跟拍点头用一个常驻定时器：下去 -> 定时回中，不每拍创建任务。
+        esp_timer_create_args_t beat_args = {};
+        beat_args.callback = &StackChanServo::BeatNodCb;
+        beat_args.arg = this;
+        beat_args.dispatch_method = ESP_TIMER_TASK;
+        beat_args.name = "servo_beat";
+        beat_args.skip_unhandled_events = true;
+        esp_timer_create(&beat_args, &beat_timer_);
+
         if (kIdleScanEnabled) {
             esp_timer_start_periodic(idle_timer_, 4000000);
             scan_running_ = true;
@@ -129,6 +140,8 @@ public:
     void Nod();
     void Shake();
     void Tilt();
+    /** 跟拍点头：下去 amplitude 度，step_ms 后回中。动作未结束时新拍会被跳过。 */
+    void BeatNod(int amplitude_deg, int step_ms);
 
     bool IsAnimating() const { return anim_running_; }
 
@@ -140,8 +153,18 @@ private:
         self->MoveTo(yaw, pitch, 1500);
     }
 
+    struct BeatNodState {
+        int yaw;
+        int base_pitch;
+        int step_ms;
+    };
+
+    static void BeatNodCb(void* arg);
+
     SCSCL bus_;
     esp_timer_handle_t idle_timer_ = nullptr;
+    esp_timer_handle_t beat_timer_ = nullptr;
+    BeatNodState beat_nod_state_ = {};
     FaceTracker* tracker_ = nullptr;
     bool scan_running_ = false;
     volatile bool anim_running_ = false;
@@ -374,6 +397,35 @@ void StackChanServo::Tilt() {
     }, "tilt", 2048, ctx, 2, nullptr, 1);
 }
 
+void StackChanServo::BeatNod(int amplitude_deg, int step_ms) {
+    if (anim_running_ || beat_timer_ == nullptr) {
+        return;
+    }
+    if (amplitude_deg < 4) amplitude_deg = 4;
+    if (amplitude_deg > 20) amplitude_deg = 20;
+    if (step_ms < 50) step_ms = 50;
+    if (step_ms > 200) step_ms = 200;
+
+    anim_running_ = true;
+    beat_nod_state_.yaw = last_yaw_deg_;
+    beat_nod_state_.base_pitch = last_pitch_deg_;
+    beat_nod_state_.step_ms = step_ms;
+
+    int down = last_pitch_deg_ - amplitude_deg;
+    if (down < 5) down = 5;
+    MoveTo(last_yaw_deg_, down, step_ms);
+
+    esp_timer_stop(beat_timer_);
+    esp_timer_start_once(beat_timer_, static_cast<uint64_t>(step_ms) * 1000ULL);
+}
+
+void StackChanServo::BeatNodCb(void* arg) {
+    auto* self = static_cast<StackChanServo*>(arg);
+    self->MoveTo(self->beat_nod_state_.yaw, self->beat_nod_state_.base_pitch,
+                 self->beat_nod_state_.step_ms);
+    self->anim_running_ = false;
+}
+
 static bool EnableServoPowerViaPy32(i2c_master_bus_handle_t i2c_bus) {
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
@@ -473,6 +525,15 @@ public:
 
     void SetExpression(Expression e) { expression_ = e; }
     void SetOverlay(const Overlay& o) { overlay_ = o; }
+
+    void SetRhythmMode(bool on) {
+        rhythm_mode_ = on;
+        if (!on) {
+            for (int i = 0; i < kSpectrumBars; ++i) {
+                spectrum_[i] = 0.0f;
+            }
+        }
+    }
     void StartSpeaking(uint32_t duration_ms) {
         speaking_until_ms_ = lv_tick_get() + duration_ms;
     }
@@ -600,8 +661,31 @@ private:
         DrawEye(&layer, fg, bg, false);
         DrawEye(&layer, fg, bg, true);
         DrawOverlay(&layer, fg, bg);
+        if (rhythm_mode_) {
+            // 直接在绘制线程里取快照：避免定时器任务为了拿显示锁而拖延跟拍点头。
+            RhythmEngine::GetInstance().GetBars(spectrum_, kSpectrumBars);
+            DrawSpectrum(&layer);
+        }
 
         lv_canvas_finish_layer(canvas_, &layer);
+    }
+
+    /** 音乐律动：屏幕底部 32 根薄荷绿竖条，不挡嘴。 */
+    void DrawSpectrum(lv_layer_t* layer) {
+        const lv_color_t color = lv_color_make(0x5A, 0xF0, 0xA0);
+        const int bar_w = 6;
+        const int gap = 2;
+        const int total = kSpectrumBars * (bar_w + gap) - gap;
+        const int x0 = (w_ - total) / 2;
+        const int base_y = h_ - 2;
+        for (int i = 0; i < kSpectrumBars; ++i) {
+            float value = spectrum_[i];
+            if (value < 0.0f) value = 0.0f;
+            if (value > 1.0f) value = 1.0f;
+            value = sqrtf(value);   // gamma 0.5：小声也看得见
+            const int height = 3 + static_cast<int>(value * 30.0f);
+            FillRect(layer, x0 + i * (bar_w + gap), base_y - height, bar_w, height, color);
+        }
     }
 
     void FillRect(lv_layer_t* layer, int x, int y, int w, int h, lv_color_t c) {
@@ -979,6 +1063,9 @@ private:
     lv_obj_t* canvas_ = nullptr;
     uint8_t* buf_ = nullptr;
     lv_timer_t* timer_ = nullptr;
+    static constexpr int kSpectrumBars = 32;
+    bool rhythm_mode_ = false;
+    float spectrum_[kSpectrumBars] = {};
     int w_ = 320, h_ = 240;
 
     Expression expression_ = Expression::Neutral;
@@ -1074,6 +1161,22 @@ public:
     void SetFaceTracker(FaceTracker* ft) { face_tracker_ = ft; }
     void SetServo(StackChanServo* s) { servo_ = s; }
     void SetLedUpdater(std::function<void(const char*)> fn) { led_updater_ = std::move(fn); }
+
+    // ---- 音乐律动 ----
+    void SetRhythmMode(bool on) {
+        DisplayLockGuard lock(this);
+        avatar_.SetRhythmMode(on);
+        if (!on) {
+            avatar_.SetExpression(shizhou_avatar::Expression::Neutral);
+            avatar_.SetOverlay(shizhou_avatar::Overlay{});
+        }
+    }
+    void SetRhythmFace(bool happy) {
+        DisplayLockGuard lock(this);
+        avatar_.SetExpression(happy ? shizhou_avatar::Expression::Happy
+                                   : shizhou_avatar::Expression::Neutral);
+        avatar_.SetOverlay(shizhou_avatar::Overlay{});
+    }
 
     void OnPetted() {
         if (!avatar_.IsReady()) return;
@@ -1354,6 +1457,10 @@ private:
     volatile bool focus_running_ = false;
     TaskHandle_t focus_task_ = nullptr;
     uint32_t focus_end_ms_ = 0;
+    /* 音乐律动状态 */
+    esp_timer_handle_t rhythm_timer_ = nullptr;
+    bool rhythm_active_ = false;
+    bool rhythm_happy_ = false;
     StackChanServo servo_;
     FaceTracker face_tracker_;
     esp_timer_handle_t touchpad_timer_;
@@ -2476,6 +2583,117 @@ public:
 
     virtual Display* GetDisplay() override {
         return display_;
+    }
+
+    // ---- 音乐律动（外部音乐，本地听音）----
+    virtual bool StartMusicRhythm() override {
+        if (rhythm_active_) {
+            return true;
+        }
+        RhythmEngine::GetInstance().Start();
+        rhythm_active_ = true;
+        rhythm_happy_ = false;
+        servo_.PauseScan();
+        face_tracker_.Pause(false);
+        if (display_ != nullptr) {
+            auto* disp = static_cast<M5StackAvatarDisplay*>(display_);
+            disp->SetRhythmMode(true);
+            disp->SetRhythmFace(false);
+        }
+        if (rhythm_timer_ == nullptr) {
+            esp_timer_create_args_t args = {};
+            args.callback = &M5StackCoreS3Board::RhythmTimerCb;
+            args.arg = this;
+            args.dispatch_method = ESP_TIMER_TASK;
+            args.name = "rhythm_tick";
+            args.skip_unhandled_events = true;
+            esp_timer_create(&args, &rhythm_timer_);
+        }
+        if (rhythm_timer_ != nullptr) {
+            esp_timer_start_periodic(rhythm_timer_, 20000);   // 20ms
+        }
+        ESP_LOGI(TAG, "music rhythm ON");
+        return true;
+    }
+
+    virtual void StopMusicRhythm() override {
+        if (!rhythm_active_) {
+            return;
+        }
+        rhythm_active_ = false;
+        if (rhythm_timer_ != nullptr) {
+            esp_timer_stop(rhythm_timer_);
+        }
+        RhythmEngine::GetInstance().Stop();
+        if (display_ != nullptr) {
+            auto* disp = static_cast<M5StackAvatarDisplay*>(display_);
+            disp->SetRhythmMode(false);
+            display_->SetEmotion("neutral");
+        }
+        rhythm_happy_ = false;
+        ESP_LOGI(TAG, "music rhythm OFF");
+    }
+
+    virtual bool IsMusicRhythmRunning() override {
+        return rhythm_active_;
+    }
+
+    static void RhythmTimerCb(void* arg) {
+        static_cast<M5StackCoreS3Board*>(arg)->RhythmTick();
+    }
+
+    void RhythmTick() {
+        if (!rhythm_active_) {
+            return;
+        }
+        // 任何对话/说话状态都退出律动，避免和语音交互抢舵机。
+        if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle) {
+            StopMusicRhythm();
+            return;
+        }
+        // Nod/Tilt 等动作结束时会把追踪恢复；律动期间重新压住。
+        if (!face_tracker_.IsPaused()) {
+            face_tracker_.Pause(false);
+        }
+
+        auto& engine = RhythmEngine::GetInstance();
+        const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+
+        if (engine.ConsumeBeat()) {
+            const uint32_t period = engine.BeatPeriodMs();
+            const float strength = engine.LastBeatStrength();
+            int amplitude = 10;
+            int step_ms = 90;
+            if (period == 0 || period >= 620) {
+                amplitude = 14;   // 慢歌：点头更深
+                step_ms = 120;
+            } else if (period < 400) {
+                amplitude = 8;    // 快歌：短促
+                step_ms = 70;
+            }
+            if (strength >= 2.0f) {
+                amplitude += 3;   // 强拍：幅度加大
+            }
+            servo_.BeatNod(amplitude, step_ms);
+        }
+
+        const bool loud = engine.IsLoud();
+        const uint32_t loud_ms = engine.LoudDurationMs(now);
+        if (display_ != nullptr) {
+            auto* disp = static_cast<M5StackAvatarDisplay*>(display_);
+            if (loud && loud_ms >= 5000 && !rhythm_happy_) {
+                disp->SetRhythmFace(true);
+                rhythm_happy_ = true;
+            } else if (!loud && rhythm_happy_) {
+                disp->SetRhythmFace(false);
+                rhythm_happy_ = false;
+            }
+        }
+
+        if (engine.SilenceMs(now) > 60000) {
+            ESP_LOGI(TAG, "rhythm auto stop: 60s silence");
+            StopMusicRhythm();
+        }
     }
 
     virtual Camera* GetCamera() override {

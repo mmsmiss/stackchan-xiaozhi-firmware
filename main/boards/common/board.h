@@ -73,6 +73,11 @@ public:
     virtual bool GetTemperature(float& esp32temp);
     virtual Display* GetDisplay();
     virtual Camera* GetCamera();
+
+    // 音乐律动：默认不做，CoreS3 板子按需覆盖。
+    virtual bool StartMusicRhythm() { return false; }
+    virtual void StopMusicRhythm() {}
+    virtual bool IsMusicRhythmRunning() { return false; }
     virtual NetworkInterface* GetNetwork() = 0;
     virtual void StartNetwork() = 0;
     virtual void SetNetworkEventCallback(NetworkEventCallback callback) { (void)callback; }

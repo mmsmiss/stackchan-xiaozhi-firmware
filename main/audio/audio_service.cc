@@ -1,4 +1,5 @@
 #include "audio_service.h"
+#include "rhythm_engine.h"
 #include <esp_log.h>
 #include <cstring>
 
@@ -270,6 +271,12 @@ void AudioService::AudioInputTask() {
             int samples = 160; // 10ms
             std::vector<int16_t> data;
             if (ReadAudioData(data, 16000, samples)) {
+                // 音乐律动：复制一份原始麦克风数据给听音分析。
+                // 必须在 wake_word_->Feed / audio_processor_->Feed 之前调用，
+                // 后面的 audio_processor_->Feed 会把 data 移走。
+                if (RhythmEngine::GetInstance().IsRunning()) {
+                    RhythmEngine::GetInstance().Feed(data.data(), data.size(), codec_->input_channels());
+                }
                 if (bits & AS_EVENT_WAKE_WORD_RUNNING) {
                     wake_word_->Feed(data);
                 }

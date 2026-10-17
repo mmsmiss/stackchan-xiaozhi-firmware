@@ -105,8 +105,12 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
 #elif defined(CONFIG_WAKE_WORD_SENSITIVITY_HIGH)
     if (models_list == nullptr) threshold_ = 0.20f;
 #endif
-    // Add a second wake word here if needed, e.g.:
-    // commands_.push_back({"ni hao xiao zhi", "你好小智", "wake"});
+    // 音乐律动：本地命令词，识别后由 Application 直接开关律动，不连服务器。
+    // action 必须是 "wake"：CustomWakeWord::Feed 只对 action=="wake" 的命令回调。
+    commands_.push_back({"kai shi yin yue lv dong", "开始音乐律动", "wake"});
+    commands_.push_back({"dou dou yin yue lv dong", "豆豆音乐律动", "wake"});
+    commands_.push_back({"yin yue lv dong", "音乐律动", "wake"});
+    commands_.push_back({"ting zhi yin yue lv dong", "停止音乐律动", "wake"});
 
     if (models_ == nullptr || models_->num == -1) {
         ESP_LOGE(TAG, "Failed to initialize wakenet model");
