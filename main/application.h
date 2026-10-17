@@ -82,6 +82,7 @@ public:
      * Alert with status, message, emotion and optional sound
      */
     void Alert(const char* status, const char* message, const char* emotion = "", const std::string_view& sound = "");
+    void PlayRemoteOgg(const std::string& url);
     void DismissAlert();
 
     void AbortSpeaking(AbortReason reason);

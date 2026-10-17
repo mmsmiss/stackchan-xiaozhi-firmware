@@ -12,6 +12,7 @@
 
 #include <cstring>
 #include <esp_log.h>
+#include <esp_http_client.h>
 #include <cJSON.h>
 #include <driver/gpio.h>
 #include <arpa/inet.h>
@@ -580,6 +581,14 @@ void Application::InitializeProtocol() {
                     ESP_LOGW(TAG, "Unknown system command: %s", command->valuestring);
                 }
             }
+        } else if (strcmp(type->valuestring, "notify") == 0) {
+            /* 服务器主动播报（专注力提醒）：下载 OGG 并播放 */
+            auto url = cJSON_GetObjectItem(root, "audio_url");
+            if (cJSON_IsString(url)) {
+                Schedule([this, url_str = std::string(url->valuestring)]() {
+                    PlayRemoteOgg(url_str);
+                });
+            }
         } else if (strcmp(type->valuestring, "alert") == 0) {
             auto status = cJSON_GetObjectItem(root, "status");
             auto message = cJSON_GetObjectItem(root, "message");
@@ -637,6 +646,36 @@ void Application::ShowActivationCode(const std::string& code, const std::string&
             audio_service_.PlaySound(it->sound);
         }
     }
+}
+
+static esp_err_t NotifyHttpEventHandler(esp_http_client_event_t* evt) {
+    if (evt->event_id == HTTP_EVENT_ON_DATA) {
+        auto* buf = static_cast<std::string*>(evt->user_data);
+        buf->append(static_cast<const char*>(evt->data), evt->data_len);
+    }
+    return ESP_OK;
+}
+
+void Application::PlayRemoteOgg(const std::string& url) {
+    std::string buf;
+    esp_http_client_config_t cfg = {};
+    cfg.url = url.c_str();
+    cfg.timeout_ms = 10000;
+    cfg.event_handler = NotifyHttpEventHandler;
+    cfg.user_data = &buf;
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (client == nullptr) {
+        ESP_LOGW(TAG, "Notify: http client init failed");
+        return;
+    }
+    esp_err_t err = esp_http_client_perform(client);
+    esp_http_client_cleanup(client);
+    if (err != ESP_OK || buf.empty()) {
+        ESP_LOGW(TAG, "Notify: download failed (%s, %d bytes)", esp_err_to_name(err), (int)buf.size());
+        return;
+    }
+    ESP_LOGI(TAG, "Notify: playing %d bytes", (int)buf.size());
+    audio_service_.PlaySound(std::string_view(buf.data(), buf.size()));
 }
 
 void Application::Alert(const char* status, const char* message, const char* emotion, const std::string_view& sound) {
