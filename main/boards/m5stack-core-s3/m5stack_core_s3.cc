@@ -2256,6 +2256,13 @@ private:
                 if (pending_single_release && (now - pending_single_release_time) <= DOUBLE_CLICK_MS) {
                     // 第二次短按落在窗口内 → 双击
                     pending_single_release = false;
+                    // [20261018] 作业监督中：双击退出监督（平时双击互动保持不变）
+                    if (focus_running_) {
+                        ESP_LOGI(TAG, "focus exit by double tap");
+                        StopFocusMonitor();
+                        SendUserMessage("退出作业监督");
+                        return;
+                    }
                     SendUserMessage(PickRandom(DoubleClickPool()));
                 } else {
                     // 候选单击，等下一帧或下次按下判定
